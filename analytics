@@ -1,0 +1,119 @@
+import requests
+import json
+import pandas as pd
+import datetime
+
+url_token = "https://login.mypurecloud.com/oauth/token"
+
+payload='grant_type=client_credentials'
+headers = {
+  'Authorization': 'id extraído pelo postman',
+  'Content-Type': 'application/x-www-form-urlencoded'
+}
+
+response = requests.request("POST", url_token, headers=headers, data=payload)
+
+token = response.json().get('access_token')
+
+url_details = "https://api.mypurecloud.com/api/v2/analytics/conversations/details/query"
+
+headers = {
+  'Authorization': f'Bearer {token}',
+  'Content-Type': 'application/json'
+}
+
+# ano, mes, dia
+start_date = datetime.date(2020, 12, 4) 
+
+# deixei como o dia antes do atual pra buscar as informações mais recentes
+# sem precisar alterar na mão toda vez que precisar executar o script
+# e de uma forma que não chegue até chamadas não completadas
+end_date = datetime.date.today() - datetime.timedelta(1)
+
+# .days garante que vem apenas o número de dias
+# ao invés do objeto datetime.date
+delta = (end_date - start_date).days
+
+for single_date in (start_date + datetime.timedelta(n) for n in range(delta)):
+    dfs = []
+    page_number = 1
+    has_data = True
+    store_list = []
+    
+    while has_data:
+        payload = {
+          "interval": f"{single_date.strftime('%Y-%m-%d')}T00:00:00.000Z/{single_date.strftime('%Y-%m-%d')}T23:59:59.999Z",
+          "order": "asc",
+          "orderBy": "conversationStart",
+          "paging": {
+            "pageSize": 100,
+            "pageNumber": page_number
+          }
+        }
+        headers = {
+          'Authorization': f'Bearer {token}',
+          'Content-Type': 'application/json'
+        }
+
+        response = requests.request("POST", url_details, headers=headers, json=payload)
+        A = json.loads(response.text)
+        k = A.get('conversations',{})
+        
+        # se k (onde estão as informações que queremos) possui algum dado, isto é,
+        # seu tamanho (len) é diferente de zero, nós os pegamos
+        # se não tiver nada, saia do while
+        if len(k) != 0:
+            # para cada item em k, pegue as suas informações
+            for item in k:
+                
+                store_details = {
+                    'conv_id':None,
+                    'conv_start':None,
+                    'conv_end':None,
+                    'part_id':None,
+                    'mediaType':None,
+                    'direction':None,
+                    'remote':None
+                }
+                
+                store_details['conv_id'] = item['conversationId']
+                store_details['conv_start'] = item['conversationStart']
+                store_details['conv_end'] = item['conversationEnd']
+                store_details['part_id'] = item['participants'][0]['participantId']
+                
+                for i in range(len(item['participants'])):
+                    temp = item['participants'][i]['sessions'][0]
+                    try:
+                        store_details['mediaType'] = temp['mediaType']
+                        store_details['direction'] = temp['direction']
+                        store_details['remote'] = temp['remote']
+                    except:
+                        pass
+                
+                store_list.append(store_details)
+
+            dfs.append(pd.DataFrame(store_list)) 
+            page_number += 1
+            
+        else:
+            has_data = False
+            
+    print(f'Pego informações da data {single_date} em {page_number} páginas')
+    
+    # pd.concat junta todos os dataframes de uma lista em um só
+    df = pd.concat(dfs,
+                   ignore_index=True)
+    
+    # para que o header 
+    escreve_header = single_date == start_date
+    
+    # garante que numa nova rotina ele sobrescreva sobre as informações antigas
+    # modo 'a' significa que ele vai adicionar novos dados
+    # modo 'w' significa que ele vai sobrescrever sobre o que já tinha no antigo
+    mode = 'w' if escreve_header else 'a'
+    
+    df.to_csv('conversas.csv',
+              mode=mode,
+              index=False,
+              header = escreve_header)
+    print(f'Salvo informações da data {single_date} no disco')
